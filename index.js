@@ -39,7 +39,7 @@ async function run() {
     unverifiedUsersCollection = db.collection("unverified_users");
     recipesCollection = db.collection("recipes");
 
-    // Nodemailer OAuth2 setup
+    // Nodemailer setup
     const oAuth2Client = new google.auth.OAuth2(
       process.env.CLIENT_ID,
       process.env.CLIENT_SECRET,
@@ -48,7 +48,7 @@ async function run() {
 
     oAuth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
 
-    // OTP email sending function with Nodemailer using OAuth2
+    // OTP email sending function
     const sendOtpEmail = async (email, otp) => {
       try {
         const accessToken = await oAuth2Client.getAccessToken();
@@ -116,10 +116,9 @@ async function run() {
 
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
-        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
-        const otpExpires = new Date(Date.now() + 5 * 60 * 1000); // OTP expires in 5 minutes
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpires = new Date(Date.now() + 5 * 60 * 1000); 
 
-        // Saving data to unverified_users collection instead of users directly.
         const newUnverifiedUser = {
           username,
           email,
@@ -166,7 +165,7 @@ async function run() {
         };
         await usersCollection.insertOne(verifiedUser);
 
-        // Deleting temporary data from unverified_users.
+        // temporary data from unverified user.
         await unverifiedUsersCollection.deleteOne({ email });
 
         res.status(200).json({
@@ -225,37 +224,77 @@ async function run() {
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
         const ingredientsString = ingredients.join(', ');
 
-        const prompt = `Based on these ingredients: [${ingredientsString}], suggest a few creative and easy-to-make recipes. The recipes must be strictly in the following JSON format. Do not include any other text, explanation, or notes outside of the JSON. If you cannot generate any recipe, return an empty JSON array.
+        // Detect if ingredients are in Bangla
+        const isBangla = /[\u0980-\u09FF]/.test(ingredientsString);
 
-[
-  {
-    "name": "...",
-    "ingredients": ["...", "..."],
-    "instructions": "..."
-  },
-  {
-    "name": "...",
-    "ingredients": ["...", "..."],
-    "instructions": "..."
-  }
-]`;
+        const prompt = `Generate as many creative and practical recipes as possible using ONLY these ingredients: ${ingredientsString}. 
+    
+    IMPORTANT INSTRUCTIONS:
+    1. Respond in ${isBangla ? 'Bangla (Bengali)' : 'English'} language only
+    2. For each recipe include:
+       - A creative and descriptive name
+       - All required ingredients (only from provided list)
+       - Detailed step-by-step cooking instructions
+       - Cooking time and difficulty level
+       - Serving suggestions if applicable
+    
+    STRICT RULES:
+    - Generate maximum possible distinct recipes
+    - Use only the provided ingredients
+    - Maintain consistent language throughout
+    - Make instructions practical and precise
+    - Include estimated cooking time
+    - Return perfect JSON format without any additional text
+    
+    ${isBangla ? `
+    বাংলা ফরম্যাট উদাহরণ:
+    [
+      {
+        "name": "রেসিপির নাম",
+        "ingredients": ["উপাদান ১", "উপাদান ২"],
+        "instructions": "১. প্রথম ধাপ...\n২. দ্বিতীয় ধাপ...",
+        "cookingTime": "X মিনিট",
+        "difficulty": "সহজ/মধ্যম/কঠিন"
+      }
+    ]` : `
+    English Format Example:
+    [
+      {
+        "name": "Recipe Name",
+        "ingredients": ["ingredient1", "ingredient2"],
+        "instructions": "1. First step...\n2. Second step...",
+        "cookingTime": "X mins",
+        "difficulty": "Easy/Medium/Hard"
+      }
+    ]`}`;
 
         const result = await model.generateContent(prompt);
         let responseText = result.response.text();
 
+        // JSON extraction
         responseText = responseText.replace(/```json|```/g, '').trim();
+        const jsonStart = Math.max(responseText.indexOf('['), 0);
+        const jsonEnd = Math.min(responseText.lastIndexOf(']') + 1, responseText.length);
+        const jsonString = responseText.slice(jsonStart, jsonEnd);
 
-        if (!responseText.startsWith('[') || !responseText.endsWith(']')) {
-          throw new Error('API returned an invalid JSON format.');
-        }
+        const recipes = JSON.parse(jsonString);
 
-        const recipes = JSON.parse(responseText);
+        // Filter out any empty or invalid recipes
+        const validRecipes = recipes.filter(recipe =>
+          recipe.name &&
+          recipe.ingredients &&
+          recipe.ingredients.length > 0 &&
+          recipe.instructions
+        );
 
-        res.status(200).json(recipes);
+        res.status(200).json(validRecipes);
 
       } catch (error) {
         console.error("API call failed:", error);
-        res.status(500).json({ error: "Failed to generate meal plan. Please check your API key or try again." });
+        res.status(500).json({
+          error: "Failed to generate recipes. Please try again with different ingredients.",
+          details: error.message
+        });
       }
     });
 
