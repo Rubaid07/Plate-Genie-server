@@ -18,9 +18,7 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   }
 });
-
 let db, usersCollection, recipesCollection, unverifiedUsersCollection;
-
 async function run() {
   try {
     await client.connect();
